@@ -324,11 +324,33 @@ const plugin = {
     if (input?.tool?.transform && res?.tool) {
       input.tool.transform((r: any) => {
         for (const [name, t] of Object.entries(res.tool)) {
+          const toolDef = t as any
+          let inputSchema: any = undefined
+          if (toolDef.args) {
+            try {
+              inputSchema = toolDef.args?._def ? toolDef.args : tool.schema.object(toolDef.args)
+            } catch {
+              inputSchema = toolDef.args
+            }
+          }
           r.add({
             id: name,
             name,
-            description: (t as any).description,
-            execute: async (args: any) => (t as any).execute(args),
+            description: toolDef.description,
+            input: inputSchema,
+            execute: async (args: any, context?: any) => {
+              try {
+                const out = await toolDef.execute(args ?? {}, context ?? {})
+                if (out !== null && typeof out === "object") {
+                  if ("content" in out && !("output" in out)) return out
+                  if ("output" in out) return { content: String(out.output) }
+                  return { content: JSON.stringify(out) }
+                }
+                return { content: String(out ?? "") }
+              } catch (err: any) {
+                return { content: `Error: ${err?.message ?? String(err)}` }
+              }
+            },
           })
         }
       })
@@ -340,7 +362,8 @@ const plugin = {
           description: "Show API keys failover status, weights, and quarantine timers",
           execute: async (d: any) => {
             const statusTool = res?.tool?.["keychain-status"]
-            const text = statusTool ? await (statusTool as any).execute({}, {} as any) : "Keychain active."
+            const out = statusTool ? await (statusTool as any).execute({}, {} as any) : "Keychain active."
+            const text = typeof out === "object" && out !== null ? (out.content ?? out.output ?? JSON.stringify(out)) : String(out ?? "")
             if (input?.session?.prompt && d?.sessionID) {
               await input.session.prompt({ ...d?.prompt, sessionID: d.sessionID, text: `## Keychain Status\n\n${text}` })
             }
@@ -351,7 +374,8 @@ const plugin = {
           description: "Show API keys failover status",
           execute: async (d: any) => {
             const statusTool = res?.tool?.["keychain-status"]
-            const text = statusTool ? await (statusTool as any).execute({}, {} as any) : "Keychain active."
+            const out = statusTool ? await (statusTool as any).execute({}, {} as any) : "Keychain active."
+            const text = typeof out === "object" && out !== null ? (out.content ?? out.output ?? JSON.stringify(out)) : String(out ?? "")
             if (input?.session?.prompt && d?.sessionID) {
               await input.session.prompt({ ...d?.prompt, sessionID: d.sessionID, text: `## Keychain Status\n\n${text}` })
             }
