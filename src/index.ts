@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { loadProviderConfig, validateProviderConfig, providerIDs, envFilePath, readEnvFile, writeEnvKey, removeEnvKey, KEYCHAIN_JSON_KEY, readKeychainJson, writeKeychainJson, migrateLegacyKeys, importFromAuthJson } from "./lib/config.ts"
+import { loadProviderConfig, validateProviderConfig, providerIDs, envFilePath, readEnvFile, writeEnvKey, removeEnvKey, KEYCHAIN_JSON_KEY, readKeychainJson, writeKeychainJson, migrateLegacyKeys, importFromAuthJson, loadAllEnv } from "./lib/config.ts"
 import { KeyPool } from "./lib/state.ts"
 import { writeAuthKey, removeAuthKey } from "./lib/auth.ts"
 import { installFetchPatch, uninstallFetchPatch, registerProvider } from "./lib/fetch-patch.ts"
@@ -107,8 +107,10 @@ function clearAuthKey(providerID: string): void {
 }
 
 export const server = async function(input: any, opts?: unknown) {
+  const dir = input?.directory ?? process.cwd()
+  loadAllEnv(dir)
   const pool = new KeyPool()
-  trace(`failoverPlugin init | directory=${input.directory}`)
+  trace(`failoverPlugin init | directory=${dir}`)
 
   for (const providerID of providerIDs(opts)) {
     const config = validateProviderConfig(providerID, opts)
@@ -181,6 +183,16 @@ export const server = async function(input: any, opts?: unknown) {
         description: "opencode-failover: Show live status of all API keys — active, quarantined, disabled, weights, retry timers.",
         args: {},
         async execute() {
+          loadAllEnv(input?.directory ?? process.cwd())
+          for (const providerID of providerIDs(opts)) {
+            if (!pool.allProviderIDs().includes(providerID)) {
+              const config = loadProviderConfig(providerID, opts)
+              if (config) {
+                pool.register(providerID, config)
+                registerProvider(providerID, { header: config.header, scheme: config.scheme })
+              }
+            }
+          }
           const lines: string[] = []
           for (const providerID of pool.allProviderIDs()) {
             const keys = pool.status(providerID)
@@ -321,6 +333,9 @@ const plugin = {
       },
     }
     const res = await server(ctx, input?.options)
+    if (res?.config) {
+      try { await res.config() } catch (e) { trace(`res.config failed: ${e}`) }
+    }
     if (input?.tool?.transform && res?.tool) {
       input.tool.transform((r: any) => {
         for (const [name, t] of Object.entries(res.tool)) {

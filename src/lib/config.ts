@@ -2,6 +2,7 @@ import { z } from "zod"
 import { existsSync, readFileSync } from "node:fs"
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
+import os from "node:os"
 import { readAuth } from "./auth.ts"
 
 const ProviderConfigSchema = z.object({
@@ -189,6 +190,29 @@ export function envFilePath(directory: string): string {
   const custom = Bun.env.OPENCODE_FAILOVER_ENV_FILE
   if (custom) return path.isAbsolute(custom) ? custom : path.resolve(directory, custom)
   return path.join(directory, ".env")
+}
+
+export function loadAllEnv(directory: string): void {
+  const custom = Bun.env.OPENCODE_FAILOVER_ENV_FILE
+  const home = os.homedir()
+  const candidates: string[] = []
+  candidates.push(path.join(home, ".env"))
+  candidates.push(path.join(home, ".config", "opencode", ".env"))
+  if (directory) {
+    candidates.push(path.join(directory, ".env"))
+  }
+  if (custom) {
+    candidates.push(path.isAbsolute(custom) ? custom : path.resolve(directory, custom))
+  }
+
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      const vars = readEnvFile(p)
+      for (const [k, v] of vars) {
+        Bun.env[k] = v
+      }
+    }
+  }
 }
 
 export function readEnvFile(filePath: string): Map<string, string> {

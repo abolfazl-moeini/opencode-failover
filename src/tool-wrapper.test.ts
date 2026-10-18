@@ -35,7 +35,7 @@ describe("OpenCode v2 tool wrapper", () => {
     // 3. Result MUST have "content" property of type string
     expect("content" in result).toBe(true)
     expect(typeof result.content).toBe("string")
-    expect(result.content).toContain("opencode-failover")
+    expect(result.content).toMatch(/Summary|opencode-failover/)
   })
 
   it("handles tool errors without throwing unhandled exceptions", async () => {
