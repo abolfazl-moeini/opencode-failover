@@ -43,14 +43,15 @@ export function parseEnvProviders(): Map<string, ProviderConfig> {
 }
 
 export function parseEnvKeys(id: string): string[] | null {
-  const json = readKeychainJson(envMap())
-  const fromJson = json.get(id)
-  if (fromJson) return fromJson
-
   const upcase = id.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()
   const raw = Bun.env[`${upcase}_API_KEYS`]
-  if (!raw) return null
-  return raw.split(",").map((k) => k.trim()).filter(Boolean)
+  const envKeys = raw ? raw.split(",").map((k) => k.trim()).filter(Boolean) : []
+
+  const json = readKeychainJson(envMap())
+  const fromJson = json.get(id) ?? []
+
+  const combined = [...new Set([...envKeys, ...fromJson])]
+  return combined.length > 0 ? combined : null
 }
 
 export function parseOptionsProviders(options: unknown): Map<string, ProviderConfig> {
@@ -91,21 +92,27 @@ export function loadProviderConfig(
 export function discoverEnvProviders(): Map<string, ProviderConfig> {
   const result = new Map<string, ProviderConfig>()
 
-  const envVars = envMap()
-  for (const [id, keys] of readKeychainJson(envVars)) {
-    if (keys.length === 0) continue
-    result.set(id, { keys, header: "Authorization", scheme: "Bearer" })
-  }
-
   for (const [key, value] of Object.entries(Bun.env)) {
     if (!key.endsWith("_API_KEYS")) continue
     if (key === PROVIDERS_ENV_KEY || key === KEYCHAIN_JSON_KEY) continue
     const providerID = key.slice(0, -"_API_KEYS".length).toLowerCase()
-    if (!value || result.has(providerID)) continue
+    if (!value) continue
     const keys = value.split(",").map((k) => k.trim()).filter(Boolean)
     if (keys.length === 0) continue
     result.set(providerID, { keys, header: "Authorization", scheme: "Bearer" })
   }
+
+  const envVars = envMap()
+  for (const [id, keys] of readKeychainJson(envVars)) {
+    if (keys.length === 0) continue
+    if (result.has(id)) {
+      const existing = result.get(id)!
+      existing.keys = [...new Set([...existing.keys, ...keys])]
+    } else {
+      result.set(id, { keys, header: "Authorization", scheme: "Bearer" })
+    }
+  }
+
   return result
 }
 
