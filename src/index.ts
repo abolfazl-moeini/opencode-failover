@@ -308,4 +308,62 @@ export const server = async function(input: any, opts?: unknown) {
   }
 }
 
-export default server
+const plugin = {
+  id: "opencode-failover",
+  setup: async (input: any) => {
+    const dir = input?.location?.directory ?? input?.directory ?? process.cwd()
+    const ctx = {
+      ...input,
+      directory: dir,
+      client: input?.client ?? {
+        tui: { showToast: () => {} },
+        app: { log: () => {} },
+      },
+    }
+    const res = await server(ctx, input?.options)
+    if (input?.tool?.transform && res?.tool) {
+      input.tool.transform((r: any) => {
+        for (const [name, t] of Object.entries(res.tool)) {
+          r.add({
+            id: name,
+            name,
+            description: (t as any).description,
+            execute: async (args: any) => (t as any).execute(args),
+          })
+        }
+      })
+    }
+    if (input?.command?.transform) {
+      input.command.transform((r: any) => {
+        r.add({
+          name: "keychain",
+          description: "Show API keys failover status, weights, and quarantine timers",
+          execute: async (d: any) => {
+            const statusTool = res?.tool?.["keychain-status"]
+            const text = statusTool ? await (statusTool as any).execute({}, {} as any) : "Keychain active."
+            if (input?.session?.prompt && d?.sessionID) {
+              await input.session.prompt({ ...d?.prompt, sessionID: d.sessionID, text: `## Keychain Status\n\n${text}` })
+            }
+          },
+        })
+        r.add({
+          name: "failover",
+          description: "Show API keys failover status",
+          execute: async (d: any) => {
+            const statusTool = res?.tool?.["keychain-status"]
+            const text = statusTool ? await (statusTool as any).execute({}, {} as any) : "Keychain active."
+            if (input?.session?.prompt && d?.sessionID) {
+              await input.session.prompt({ ...d?.prompt, sessionID: d.sessionID, text: `## Keychain Status\n\n${text}` })
+            }
+          },
+        })
+      })
+    }
+    return async () => {
+      if (res?.dispose) await res.dispose()
+    }
+  },
+}
+
+export default plugin
+

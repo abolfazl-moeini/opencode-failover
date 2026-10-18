@@ -66,16 +66,21 @@ const tui: TuiPlugin = async (api) => {
     const keychain = readSharedState()
     const keychainIds = new Set((keychain?.providers ?? []).map((p) => p.id))
     if (keychainIds.size === 0) {
-      api.ui.dialog.replace(() => api.ui.DialogAlert({
-        title: "Keychain",
-        message: "No providers configured.\n\nAdd keys in chat: 'Add these API keys for nvidia: nvapi-xxx, nvapi-yyy'",
-        onConfirm: () => api.ui.dialog.clear(),
-      }))
+      const msg = "No providers configured.\n\nAdd keys in chat: 'Add these API keys for nvidia: nvapi-xxx, nvapi-yyy'"
+      if (typeof api?.ui?.dialog?.alert === "function") {
+        await api.ui.dialog.alert({ title: "Keychain", message: msg })
+      } else if (typeof api?.ui?.dialog?.replace === "function" && typeof api?.ui?.DialogAlert === "function") {
+        api.ui.dialog.replace(() => api.ui.DialogAlert({
+          title: "Keychain",
+          message: msg,
+          onConfirm: () => api.ui.dialog.clear(),
+        }))
+      }
       return
     }
 
     let providerData: Array<{ id: string; models: Record<string, { name?: string }> }> = []
-    const stateProviders = (api.state.provider && api.state.provider.length > 0)
+    const stateProviders = (api.state?.provider && api.state.provider.length > 0)
       ? [...api.state.provider] as typeof providerData
       : null
 
@@ -124,52 +129,106 @@ const tui: TuiPlugin = async (api) => {
     }
 
     if (options.length === 0) {
-      api.ui.dialog.replace(() => api.ui.DialogAlert({
-        title: "Keychain",
-        message: `Providers have keys but no models available.\n\nKeychain providers: ${[...keychainIds].map(displayName).join(", ")}`,
-        onConfirm: () => api.ui.dialog.clear(),
-      }))
+      const msg = `Providers have keys but no models available.\n\nKeychain providers: ${[...keychainIds].map(displayName).join(", ")}`
+      if (typeof api?.ui?.dialog?.alert === "function") {
+        await api.ui.dialog.alert({ title: "Keychain", message: msg })
+      } else if (typeof api?.ui?.dialog?.replace === "function" && typeof api?.ui?.DialogAlert === "function") {
+        api.ui.dialog.replace(() => api.ui.DialogAlert({
+          title: "Keychain",
+          message: msg,
+          onConfirm: () => api.ui.dialog.clear(),
+        }))
+      }
       return
     }
 
-    api.ui.dialog.setSize("large")
-    api.ui.dialog.replace(() => api.ui.DialogSelect({
-      title: "Keychain — Select Model",
-      placeholder: "Search models...",
-      options,
-      onSelect(opt: ModelOption) {
-        const { label, providerID } = opt.value
-        api.ui.dialog.clear()
-
+    if (typeof api?.ui?.dialog?.select === "function") {
+      const selected = await api.ui.dialog.select({
+        title: "Keychain — Select Model",
+        placeholder: "Search models...",
+        options: options.map(o => ({ title: o.title, description: o.category, value: o.value })),
+      })
+      if (selected) {
+        const { label, providerID } = selected
         const searchPrefix = providerID.split("-")[0]
         setTimeout(() => {
-          api.keymap.dispatchCommand("model.list")
+          if (typeof api?.keymap?.dispatch === "function") {
+            api.keymap.dispatch("model.list")
+          } else if (typeof api?.keymap?.dispatchCommand === "function") {
+            api.keymap.dispatchCommand("model.list")
+          }
           feedKeystrokes(api, `${searchPrefix} ${label}`, 150)
           feedKeystrokes(api, "\r", 160)
         }, 150)
-      },
-    }))
+      }
+      return
+    }
+
+    if (typeof api?.ui?.dialog?.replace === "function" && typeof api?.ui?.DialogSelect === "function") {
+      if (typeof api?.ui?.dialog?.setSize === "function") api.ui.dialog.setSize("large")
+      api.ui.dialog.replace(() => api.ui.DialogSelect({
+        title: "Keychain — Select Model",
+        placeholder: "Search models...",
+        options,
+        onSelect(opt: ModelOption) {
+          const { label, providerID } = opt.value
+          api.ui.dialog.clear()
+
+          const searchPrefix = providerID.split("-")[0]
+          setTimeout(() => {
+            if (typeof api?.keymap?.dispatchCommand === "function") {
+              api.keymap.dispatchCommand("model.list")
+            }
+            feedKeystrokes(api, `${searchPrefix} ${label}`, 150)
+            feedKeystrokes(api, "\r", 160)
+          }, 150)
+        },
+      }))
+    }
   }
 
-  api.keymap.registerLayer({
-    commands: [
-      {
-        name: "keychain.open",
-        title: "Open keychain dashboard",
-        desc: "Browse keychain providers & select a model",
-        category: "Provider",
-        namespace: "palette",
-        slashName: "keychain",
-        slashAliases: ["failover", "opencode-failover"],
-        run: openDashboard,
-      },
-    ],
-  })
+  const register = (api?.keymap?.layer?.bind(api.keymap) ?? api?.keymap?.registerLayer?.bind(api.keymap))
+  if (typeof register === "function") {
+    try {
+      const layerDef = () => ({
+        mode: "global",
+        commands: [
+          {
+            id: "keychain.open",
+            name: "keychain.open",
+            title: "Open keychain dashboard",
+            desc: "Browse keychain providers & select a model",
+            description: "Browse keychain providers & select a model",
+            category: "Provider",
+            group: "Provider",
+            namespace: "palette",
+            palette: true,
+            slash: {
+              name: "keychain",
+              aliases: ["failover", "opencode-failover"],
+            },
+            slashName: "keychain",
+            slashAliases: ["failover", "opencode-failover"],
+            run: openDashboard,
+          },
+        ],
+      })
+      try {
+        register(layerDef)
+      } catch {
+        register(layerDef())
+      }
+    } catch (e) {
+      console.error("[opencode-failover] failed to register keymap layer:", e)
+    }
+  }
 }
 
-const plugin: TuiPluginModule & { id: string } = {
+const plugin = {
   id: "opencode-failover",
+  setup: tui,
   tui,
 }
 
 export default plugin
+
