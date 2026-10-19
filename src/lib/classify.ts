@@ -48,6 +48,12 @@ export function classify(raw: unknown): ClassifierResult {
   }
 
   if (status === 401 || status === 403 || status === 402) {
+    if (
+      body.toLowerCase().includes("workspace access denied") ||
+      fullMessage.toLowerCase().includes("workspace access denied")
+    ) {
+      return { action: ErrorAction.Rotate, retryAfterMs: retryAfterMs ?? 60000, reason: "Workspace access mismatch" }
+    }
     const label = status === 402 ? "Payment required" : status === 401 ? "Authentication failed" : "Forbidden"
     return { action: ErrorAction.Disable, retryAfterMs: null, reason: `${label} — HTTP ${status}` }
   }

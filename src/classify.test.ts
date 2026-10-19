@@ -37,6 +37,15 @@ describe("classify", () => {
     expect(result.action).toBe(ErrorAction.Disable)
   })
 
+  it("rotates instead of disabling on 403 Workspace access denied", () => {
+    const result = classify({
+      statusCode: 403,
+      responseBody: JSON.stringify({ type: "error", error: { type: "permission_error", message: "Workspace access denied" } }),
+    })
+    expect(result.action).toBe(ErrorAction.Rotate)
+    expect(result.reason).toBe("Workspace access mismatch")
+  })
+
   it("rotates on 502", () => {
     const result = classify({
       data: { statusCode: 502 },
