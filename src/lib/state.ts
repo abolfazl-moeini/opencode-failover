@@ -178,4 +178,22 @@ export class KeyPool {
   allProviderIDs(): string[] {
     return Array.from(this.pools.keys())
   }
+
+  hasProvider(providerID: string): boolean {
+    return this.pools.has(providerID)
+  }
+
+  hasAvailableKey(providerID: string): boolean {
+    const pool = this.pools.get(providerID)
+    if (!pool || pool.length === 0) return false
+    const now = Date.now()
+    return pool.some((k) => k.status === "active" || (k.status === "quarantined" && (k.quarantinedUntil === 0 || now >= k.quarantinedUntil)))
+  }
+
+  getCurrentKey(providerID: string): string | null {
+    const pool = this.pools.get(providerID)
+    if (!pool || pool.length === 0) return null
+    const idx = this.indexes.get(providerID) ?? 0
+    return pool[idx]?.key ?? pool[0]?.key ?? null
+  }
 }

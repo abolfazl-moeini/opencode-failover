@@ -29,17 +29,24 @@ function retryMs(headers: Headers): number {
   return 60_000
 }
 
-function readHeaders(init?: RequestInit): Record<string, string> {
+function readHeaders(req?: FetchArgs[0], init?: FetchArgs[1]): Record<string, string> {
   const result: Record<string, string> = {}
-  if (!init?.headers) return result
-  if (init.headers instanceof Headers) {
-    init.headers.forEach((v, k) => { result[k.toLowerCase()] = v })
-  } else if (Array.isArray(init.headers)) {
-    for (const [k, v] of init.headers) {
-      if (k !== undefined) result[k.toLowerCase()] = String(v)
+  if (req && typeof req === "object" && "headers" in req && (req as Request).headers) {
+    const rh = (req as Request).headers
+    if (rh instanceof Headers) {
+      rh.forEach((v, k) => { result[k.toLowerCase()] = v })
     }
-  } else {
-    for (const [k, v] of Object.entries(init.headers)) result[k.toLowerCase()] = String(v)
+  }
+  if (init?.headers) {
+    if (init.headers instanceof Headers) {
+      init.headers.forEach((v, k) => { result[k.toLowerCase()] = v })
+    } else if (Array.isArray(init.headers)) {
+      for (const [k, v] of init.headers) {
+        if (k !== undefined) result[k.toLowerCase()] = String(v)
+      }
+    } else {
+      for (const [k, v] of Object.entries(init.headers)) result[k.toLowerCase()] = String(v)
+    }
   }
   return result
 }
@@ -67,7 +74,23 @@ function matchPoolKey(authValue: string): { providerID: string; key: string; met
   return null
 }
 
-function applyAuth(init: RequestInit | undefined, meta: ProviderMeta, key: string): RequestInit {
+function applyAuth(req: FetchArgs[0], init: RequestInit | undefined, meta: ProviderMeta, key: string): [FetchArgs[0], RequestInit | undefined] {
+  const value = meta.scheme ? `${meta.scheme} ${key}` : key
+  if (req && typeof req === "object" && "headers" in req && (req as Request).headers) {
+    const origReq = req as Request
+    const hdrs = new Headers(origReq.headers)
+    if (init?.headers) {
+      const initHdrs = new Headers(init.headers as any)
+      initHdrs.forEach((v, k) => hdrs.set(k, v))
+    }
+    let found = false
+    for (const name of AUTH_HEADERS) {
+      if (hdrs.has(name)) { hdrs.set(name, value); found = true; break }
+    }
+    if (!found) hdrs.set(meta.header, value)
+    return [new Request(origReq, { ...init, headers: hdrs }), undefined]
+  }
+
   const hdrs = new Headers()
   if (init?.headers) {
     if (init.headers instanceof Headers) {
@@ -80,13 +103,12 @@ function applyAuth(init: RequestInit | undefined, meta: ProviderMeta, key: strin
       for (const [k, v] of Object.entries(init.headers)) hdrs.set(k, String(v))
     }
   }
-  const value = meta.scheme ? `${meta.scheme} ${key}` : key
   let found = false
   for (const name of AUTH_HEADERS) {
     if (hdrs.has(name)) { hdrs.set(name, value); found = true; break }
   }
   if (!found) hdrs.set(meta.header, value)
-  return { ...init, headers: hdrs }
+  return [req, { ...init, headers: hdrs }]
 }
 
 export function registerProvider(providerID: string, meta: ProviderMeta): void {
@@ -103,7 +125,7 @@ export function installFetchPatch(input: any, pool: KeyPool): void {
   globalThis.fetch = (async (req: FetchArgs[0], init?: FetchArgs[1]) => {
     if (!_original || !_pool) return _original!(req, init)
 
-    const hdrs = readHeaders(init)
+    const hdrs = readHeaders(req, init)
     const authValue = findAuthValue(hdrs)
     const match = matchPoolKey(authValue)
     if (!match) return _original(req, init)
@@ -112,8 +134,8 @@ export function installFetchPatch(input: any, pool: KeyPool): void {
     let key = _pool.pick(providerID)
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      const newInit = applyAuth(init, meta, key)
-      const res = await _original(req, newInit)
+      const [finalReq, finalInit] = applyAuth(req, init, meta, key)
+      const res = await _original(finalReq, finalInit)
 
       if (!RETRYABLE.has(res.status)) {
         let body = ""

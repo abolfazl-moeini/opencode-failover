@@ -3,6 +3,7 @@ import { loadProviderConfig, validateProviderConfig, providerIDs, envFilePath, r
 import { KeyPool } from "./lib/state.ts"
 import { writeAuthKey, removeAuthKey } from "./lib/auth.ts"
 import { installFetchPatch, uninstallFetchPatch, registerProvider } from "./lib/fetch-patch.ts"
+import { installOpenCodeHooks } from "./lib/hooks.ts"
 import { existsSync, readFileSync } from "node:fs"
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
@@ -120,9 +121,11 @@ export const server = async function(input: any, opts?: unknown) {
   }
 
   installFetchPatch(input, pool)
+  installOpenCodeHooks(input, pool)
   trace(`plugin init DONE | providers=${pool.allProviderIDs().join(', ') || '(none)'}`)
 
   return {
+    pool,
     dispose: async () => {
       uninstallFetchPatch()
     },
@@ -333,6 +336,9 @@ const plugin = {
       },
     }
     const res = await server(ctx, input?.options)
+    if (res?.pool) {
+      installOpenCodeHooks(input, res.pool)
+    }
     if (res?.config) {
       try { await res.config() } catch (e) { trace(`res.config failed: ${e}`) }
     }

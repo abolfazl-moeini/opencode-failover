@@ -27,17 +27,24 @@ export function classify(raw: unknown): ClassifierResult {
   const message = String((error as APIError).message ?? (error as Record<string, unknown>).message ?? "")
   const isRetryable = Boolean((error as APIError).isRetryable ?? (error as Record<string, unknown>).isRetryable ?? false)
 
+  const errorType = String((error as any).type ?? (error as any).name ?? (error as any)._tag ?? "")
+  const fullMessage = [message, errorType].filter(Boolean).join(" ")
+
   let retryAfterMs = parseRetryAfter(headers as Record<string, string>)
   if (retryAfterMs === null) {
-    retryAfterMs = parseBodyRetryAfter(message) ?? parseBodyRetryAfter(body)
+    retryAfterMs = parseBodyRetryAfter(fullMessage) ?? parseBodyRetryAfter(body)
   }
 
-  if (hasOverloadPattern(body, message)) {
-    return { action: ErrorAction.Overload, retryAfterMs: retryAfterMs ?? 2000, reason: `Server overload — pattern: ${detectOverloadPattern(body, message)}` }
+  if (hasOverloadPattern(body, fullMessage)) {
+    return { action: ErrorAction.Overload, retryAfterMs: retryAfterMs ?? 2000, reason: `Server overload — pattern: ${detectOverloadPattern(body, fullMessage)}` }
   }
 
   if (status === 429) {
     return { action: ErrorAction.Rotate, retryAfterMs, reason: `Rate limited — HTTP 429` }
+  }
+
+  if (hasRateLimitPattern(body, fullMessage)) {
+    return { action: ErrorAction.Rotate, retryAfterMs, reason: `Rate limit — pattern: ${detectPattern(body, fullMessage)}` }
   }
 
   if (status === 401 || status === 403 || status === 402) {
@@ -47,10 +54,6 @@ export function classify(raw: unknown): ClassifierResult {
 
   if (status >= 500 && status < 600) {
     return { action: ErrorAction.Rotate, retryAfterMs: null, reason: `Server error — HTTP ${status}` }
-  }
-
-  if (hasRateLimitPattern(body, message)) {
-    return { action: ErrorAction.Rotate, retryAfterMs, reason: `Rate limit — pattern: ${detectPattern(body, message)}` }
   }
 
   return { action: ErrorAction.Ignore, retryAfterMs: null, reason: "Non-retryable error" }
@@ -90,7 +93,7 @@ function hasOverloadPattern(body: string, message: string): boolean {
 }
 
 function detectOverloadPattern(body: string, message: string): string | null {
-  const lower = body.toLowerCase() + message.toLowerCase()
+  const lower = body.toLowerCase() + " " + message.toLowerCase()
   const patterns = [
     "resourcexhausted",
     "resource exhausted",
@@ -116,14 +119,25 @@ function hasRateLimitPattern(body: string, message: string): boolean {
 }
 
 function detectPattern(body: string, message: string): string | null {
-  const lower = body.toLowerCase() + message.toLowerCase()
+  const lower = body.toLowerCase() + " " + message.toLowerCase()
   const patterns = [
     "rate increased too quickly",
     "rate limit",
-    "too many requests",
-    "unavailable",
-    "too_many_requests",
     "rate_limit",
+    "ratelimit",
+    "too many requests",
+    "too_many_requests",
+    "freeusagelimiterror",
+    "free usage limit",
+    "free_usage_limit",
+    "usage limit",
+    "quota exceeded",
+    "quotaexceeded",
+    "freetier",
+    "free_tier",
+    "credit balance",
+    "insufficient quota",
+    "unavailable",
   ]
   for (const p of patterns) {
     if (lower.includes(p)) return `"${p}"`
@@ -131,6 +145,10 @@ function detectPattern(body: string, message: string): string | null {
 
   try {
     const json = JSON.parse(body)
+    const errType = String(json?.error?.type ?? json?.type ?? "")
+    if (errType.toLowerCase().includes("freeusagelimit") || errType.toLowerCase().includes("quota") || errType.toLowerCase().includes("rate")) {
+      return `"${errType}" (json.error.type)`
+    }
     if (json?.type === "error" && json?.error?.type === "too_many_requests") return `"too_many_requests" (json.type)`
     const code = typeof json?.code === "string" ? json.code : ""
     if (code.includes("unavailable")) return `"${code}" (json.code)`
