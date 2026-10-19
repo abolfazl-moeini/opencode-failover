@@ -93,11 +93,17 @@ export function writeAuthKey(providerID: string, key: string, metadata?: Record<
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const all = readAuth()
   const existing = all[providerID]
+  const norm = providerID.toLowerCase()
+  let finalMeta = metadata
+  if (!finalMeta && existing?.metadata) {
+    if (norm !== "opencode" || existing.key === key) {
+      finalMeta = existing.metadata
+    }
+  }
   all[providerID] = {
     type: existing?.type ?? "api",
     key,
-    ...(metadata ? { metadata } : {}),
-    ...(existing?.metadata && !metadata ? { metadata: existing.metadata } : {}),
+    ...(finalMeta ? { metadata: finalMeta } : {}),
     ...(existing?.accountId ? { accountId: existing.accountId } : {}),
     ...(existing?.token ? { token: existing.token } : {}),
     ...(existing?.refresh ? { refresh: existing.refresh } : {}),

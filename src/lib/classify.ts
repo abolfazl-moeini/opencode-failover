@@ -47,15 +47,23 @@ export function classify(raw: unknown): ClassifierResult {
     return { action: ErrorAction.Rotate, retryAfterMs, reason: `Rate limit — pattern: ${detectPattern(body, fullMessage)}` }
   }
 
-  if (status === 401 || status === 403 || status === 402) {
-    if (
-      body.toLowerCase().includes("workspace access denied") ||
-      fullMessage.toLowerCase().includes("workspace access denied")
-    ) {
-      return { action: ErrorAction.Rotate, retryAfterMs: retryAfterMs ?? 60000, reason: "Workspace access mismatch" }
+  if (status === 402) {
+    return { action: ErrorAction.Rotate, retryAfterMs: retryAfterMs ?? 300_000, reason: "Payment required — HTTP 402" }
+  }
+
+  if (status === 403) {
+    const lowerBody = body.toLowerCase()
+    const lowerMsg = fullMessage.toLowerCase()
+    const isMismatch = lowerBody.includes("workspace access denied") || lowerMsg.includes("workspace access denied")
+    const isFreeTier = lowerBody.includes("freetier") || lowerMsg.includes("freetier") || lowerBody.includes("free tier") || lowerMsg.includes("free tier")
+    if (isMismatch || isFreeTier) {
+      return { action: ErrorAction.Rotate, retryAfterMs: retryAfterMs ?? 60_000, reason: isMismatch ? "Workspace access mismatch" : "Free tier restriction" }
     }
-    const label = status === 402 ? "Payment required" : status === 401 ? "Authentication failed" : "Forbidden"
-    return { action: ErrorAction.Disable, retryAfterMs: null, reason: `${label} — HTTP ${status}` }
+    return { action: ErrorAction.Disable, retryAfterMs: null, reason: `Forbidden — HTTP 403` }
+  }
+
+  if (status === 401) {
+    return { action: ErrorAction.Disable, retryAfterMs: null, reason: `Authentication failed — HTTP 401` }
   }
 
   if (status >= 500 && status < 600) {

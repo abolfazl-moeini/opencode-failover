@@ -50,12 +50,12 @@ describe("OpenCode v2 Native Session Hooks", () => {
     }
 
     await hooks["http.request"](event)
-    expect(headers.get("authorization")).toBe("Bearer key-2")
+    expect(headers.get("authorization")).toBe("Bearer key-1")
   })
 
   it("injects x-opencode-org-id when cached for opencode key", async () => {
     const { opencodeOrgCache } = await import("./lib/hooks.ts")
-    opencodeOrgCache.set("key-2", "org_test_123")
+    opencodeOrgCache.set("key-1", "org_test_123")
 
     const headers = new Headers()
     const event = {
@@ -67,7 +67,7 @@ describe("OpenCode v2 Native Session Hooks", () => {
     }
 
     await hooks["http.request"](event)
-    expect(headers.get("authorization")).toBe("Bearer key-2")
+    expect(headers.get("authorization")).toBe("Bearer key-1")
     expect(headers.get("x-opencode-org-id")).toBe("org_test_123")
     expect(headers.get("x-org-id")).toBe("org_test_123")
   })

@@ -1,6 +1,7 @@
 import type { KeyPool } from "./state.ts"
 import { classify, ErrorAction } from "./classify.ts"
 import { writeAuthKey, syncCredentialDb } from "./auth.ts"
+import { getOriginalFetch } from "./fetch-patch.ts"
 
 function safeToast(input: any, message: string, variant: string, duration?: number): void {
   try {
@@ -11,6 +12,42 @@ function safeToast(input: any, message: string, variant: string, duration?: numb
 function maskKey(key: string): string {
   if (!key || key.length <= 7) return "<key>"
   return `${key.slice(0, 4)}...${key.slice(-3)}`
+}
+
+export function getHeader(headers: any, name: string): string | null {
+  if (!headers) return null
+  const target = name.toLowerCase()
+  if (typeof headers.get === "function") {
+    return headers.get(name) || headers.get(target)
+  }
+  if (Array.isArray(headers)) {
+    const pair = headers.find(([k]: [string, string]) => String(k).toLowerCase() === target)
+    return pair ? String(pair[1]) : null
+  }
+  if (typeof headers === "object") {
+    for (const [k, v] of Object.entries(headers)) {
+      if (k.toLowerCase() === target) return String(v)
+    }
+  }
+  return null
+}
+
+export function setHeader(headers: any, name: string, value: string): void {
+  if (!headers) return
+  if (typeof headers.set === "function") {
+    headers.set(name, value)
+    return
+  }
+  if (Array.isArray(headers)) {
+    const target = name.toLowerCase()
+    const idx = headers.findIndex(([k]: [string, string]) => String(k).toLowerCase() === target)
+    if (idx >= 0) headers[idx] = [name, value]
+    else headers.push([name, value])
+    return
+  }
+  if (typeof headers === "object") {
+    headers[name] = value
+  }
 }
 
 function resolveProviderFromUrl(urlStr?: string): string | null {
@@ -48,17 +85,10 @@ function extractProviderID(event: any): string | null {
   return null
 }
 
-import { getOriginalFetch } from "./fetch-patch.ts"
-
-export const opencodeOrgCache = new Map<string, string>([
-  ["oc_sk_c94f11e9e416_7XlwOi6IqVsl6zQKieIv8JZqjf02RLb0", "org_01M55RY35H1AWP84GFGA04WAX2"],
-  ["oc_sk_7e1338de5f7a_C9690qgFz5FRBfaY5rOqSQqzkoulXae-", "wrk_01KTA98KJ3F66H7JCDYNS2E824"],
-  ["oc_sk_6c706ed80bf8_HwQSC-uExVhzjyzofwNbrh5YYwIar3rD", "org_01M55S80X4Z5SZBPRKAA1HDSRB"],
-  ["oc_sk_84f188e094b0_Pb0Fd03crbcY-SXDN24I1KcLYGjzWm3A", "org_01M58AXZG0FY0P2BP3WT37D1B2"],
-  ["oc_sk_e4f8d8517689_3yBp7QbNwdppDCa8ayDJnrGfM0NWxDqq", "org_01M58AZD6ZJWH7W3WHMDD7ND38"],
-])
+export const opencodeOrgCache = new Map<string, string>()
 
 export async function getOpencodeOrgId(key: string): Promise<string | null> {
+  if (!key) return null
   if (opencodeOrgCache.has(key)) return opencodeOrgCache.get(key)!
   try {
     const rawFetch = getOriginalFetch() ?? fetch
@@ -77,21 +107,21 @@ export async function getOpencodeOrgId(key: string): Promise<string | null> {
   return null
 }
 
-async function applyAuthToHeaders(headers: Headers, providerID: string, key: string): Promise<string | null> {
+export async function applyAuthToHeaders(headers: any, providerID: string, key: string): Promise<string | null> {
   const norm = providerID.toLowerCase()
   if (norm === "anthropic") {
-    headers.set("x-api-key", key)
+    setHeader(headers, "x-api-key", key)
     return null
   } else if (norm === "google" || norm.includes("gemini")) {
-    headers.set("x-goog-api-key", key)
+    setHeader(headers, "x-goog-api-key", key)
     return null
   } else {
-    headers.set("authorization", `Bearer ${key}`)
+    setHeader(headers, "authorization", `Bearer ${key}`)
     if (norm === "opencode") {
       const orgId = await getOpencodeOrgId(key)
       if (orgId) {
-        headers.set("x-opencode-org-id", orgId)
-        headers.set("x-org-id", orgId)
+        setHeader(headers, "x-opencode-org-id", orgId)
+        setHeader(headers, "x-org-id", orgId)
       }
       return orgId
     }
@@ -108,11 +138,17 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
       const providerID = extractProviderID(event)
       if (!providerID || !pool.hasProvider(providerID)) return
 
-      const activeKey = pool.pick(providerID)
+      const activeKey = pool.getActiveKey(providerID) ?? pool.getCurrentKey(providerID) ?? pool.pick(providerID)
       if (!activeKey) return
 
+      if (event.request && typeof event.request === "object") {
+        try {
+          ;(event.request as any).__failover_key = activeKey
+        } catch {}
+      }
+
       let orgId: string | null = null
-      if (event.request?.headers && typeof event.request.headers.set === "function") {
+      if (event.request?.headers) {
         orgId = await applyAuthToHeaders(event.request.headers, providerID, activeKey)
       }
 
@@ -146,10 +182,10 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
       if (classification.action === ErrorAction.Ignore && status < 400) return
 
       // Identify the key that was sent
-      let failedKey = ""
-      if (event.request?.headers && typeof event.request.headers.get === "function") {
-        const authHdr = event.request.headers.get("authorization") || ""
-        const apiKeyHdr = event.request.headers.get("x-api-key") || event.request.headers.get("api-key") || ""
+      let failedKey = (event.request as any)?.__failover_key ?? ""
+      if (!failedKey && event.request?.headers) {
+        const authHdr = getHeader(event.request.headers, "authorization") || ""
+        const apiKeyHdr = getHeader(event.request.headers, "x-api-key") || getHeader(event.request.headers, "api-key") || ""
         const poolKeys = pool.status(providerID)
         for (const k of poolKeys) {
           if (authHdr.includes(k.key) || apiKeyHdr === k.key) {
@@ -172,7 +208,8 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
         }
         if (pool.hasAvailableKey(providerID)) {
           const nextKey = pool.pick(providerID)
-          try { writeAuthKey(providerID, nextKey) } catch {}
+          const nextOrg = providerID.toLowerCase() === "opencode" ? await getOpencodeOrgId(nextKey) : null
+          try { writeAuthKey(providerID, nextKey, nextOrg ? { orgID: nextOrg } : undefined) } catch {}
           try { syncCredentialDb(providerID, nextKey) } catch {}
           safeToast(
             input,
@@ -188,7 +225,8 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
         }
         if (pool.hasAvailableKey(providerID)) {
           const nextKey = pool.pick(providerID)
-          try { writeAuthKey(providerID, nextKey) } catch {}
+          const nextOrg = providerID.toLowerCase() === "opencode" ? await getOpencodeOrgId(nextKey) : null
+          try { writeAuthKey(providerID, nextKey, nextOrg ? { orgID: nextOrg } : undefined) } catch {}
           try { syncCredentialDb(providerID, nextKey) } catch {}
           safeToast(
             input,
@@ -210,7 +248,8 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
 
       if (pool.hasAvailableKey(providerID)) {
         const nextKey = pool.pick(providerID)
-        try { writeAuthKey(providerID, nextKey) } catch {}
+        const nextOrg = providerID.toLowerCase() === "opencode" ? await getOpencodeOrgId(nextKey) : null
+        try { writeAuthKey(providerID, nextKey, nextOrg ? { orgID: nextOrg } : undefined) } catch {}
         try { syncCredentialDb(providerID, nextKey) } catch {}
 
         event.decision = {
@@ -218,6 +257,18 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
           delay: 100,
         }
       } else {
+        // If all keys are quarantined, check if the earliest quarantine expires soon
+        const earliest = pool.getEarliestQuarantineExpiry(providerID)
+        const now = Date.now()
+        if (earliest && earliest > now && earliest - now <= 10_000) {
+          const waitMs = Math.max(200, earliest - now)
+          event.decision = {
+            retry: true,
+            delay: waitMs + 200,
+          }
+          return
+        }
+
         event.decision = { retry: false }
         safeToast(input, `opencode-failover: Cannot retry — all keys exhausted for ${providerID}.`, "error")
       }

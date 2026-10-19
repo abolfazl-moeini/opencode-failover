@@ -187,7 +187,13 @@ export class KeyPool {
     const pool = this.pools.get(providerID)
     if (!pool || pool.length === 0) return false
     const now = Date.now()
-    return pool.some((k) => k.status === "active" || (k.status === "quarantined" && (k.quarantinedUntil === 0 || now >= k.quarantinedUntil)))
+    for (const k of pool) {
+      if (k.status === "quarantined" && (k.quarantinedUntil === 0 || now >= k.quarantinedUntil)) {
+        k.status = "active"
+        k.consecutiveErrors = 0
+      }
+    }
+    return pool.some((k) => k.status === "active")
   }
 
   getCurrentKey(providerID: string): string | null {
@@ -195,5 +201,37 @@ export class KeyPool {
     if (!pool || pool.length === 0) return null
     const idx = this.indexes.get(providerID) ?? 0
     return pool[idx]?.key ?? pool[0]?.key ?? null
+  }
+
+  getActiveKey(providerID: string): string | null {
+    const pool = this.pools.get(providerID)
+    if (!pool || pool.length === 0) return null
+    const now = Date.now()
+    for (const k of pool) {
+      if (k.status === "quarantined" && (k.quarantinedUntil === 0 || now >= k.quarantinedUntil)) {
+        k.status = "active"
+        k.consecutiveErrors = 0
+      }
+    }
+    const idx = this.indexes.get(providerID) ?? 0
+    const current = pool[idx]
+    if (current && current.status === "active") {
+      return current.key
+    }
+    const anyActive = pool.find((k) => k.status === "active")
+    if (anyActive) {
+      const activeIdx = pool.indexOf(anyActive)
+      if (activeIdx >= 0) this.indexes.set(providerID, activeIdx)
+      return anyActive.key
+    }
+    return this.pick(providerID)
+  }
+
+  getEarliestQuarantineExpiry(providerID: string): number | null {
+    const pool = this.pools.get(providerID)
+    if (!pool || pool.length === 0) return null
+    const quarantined = pool.filter((k) => k.status === "quarantined" && k.quarantinedUntil > 0)
+    if (quarantined.length === 0) return null
+    return Math.min(...quarantined.map((k) => k.quarantinedUntil))
   }
 }

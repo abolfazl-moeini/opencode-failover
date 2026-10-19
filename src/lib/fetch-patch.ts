@@ -135,7 +135,7 @@ export function installFetchPatch(input: any, pool: KeyPool): void {
     if (!match) return _original(req, init)
 
     const { providerID, meta } = match
-    let key = _pool.pick(providerID)
+    let key = _pool.getActiveKey(providerID) ?? _pool.pick(providerID)
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const [finalReq, finalInit] = applyAuth(req, init, meta, key)
@@ -145,12 +145,13 @@ export function installFetchPatch(input: any, pool: KeyPool): void {
         let body = ""
         try { body = await res.clone().text() } catch {}
         const result = classify({ statusCode: res.status, responseBody: body, message: body.slice(0, 200) })
-        if (result.action === ErrorAction.Overload) {
+        if (result.action === ErrorAction.Rotate || result.action === ErrorAction.Overload) {
           if (attempt >= MAX_RETRIES - 1) return res
+          _pool.quarantine(providerID, key, result.retryAfterMs, result.reason)
           const next = _pool.pick(providerID)
           try { writeAuthKey(providerID, next) } catch {}
           const nextMasked = next.length > 7 ? `${next.slice(0, 4)}...${next.slice(-3)}` : "<key>"
-          toast(`opencode-failover: [${providerID}] server overload. Switching to ${nextMasked} (2s backoff).`, "warning")
+          toast(`opencode-failover: [${providerID}] ${result.reason}. Switching to ${nextMasked}.`, "warning")
           key = next
           continue
         }
