@@ -48,12 +48,21 @@ function extractProviderID(event: any): string | null {
   return null
 }
 
-export const opencodeOrgCache = new Map<string, string>()
+import { getOriginalFetch } from "./fetch-patch.ts"
+
+export const opencodeOrgCache = new Map<string, string>([
+  ["oc_sk_c94f11e9e416_7XlwOi6IqVsl6zQKieIv8JZqjf02RLb0", "org_01M55RY35H1AWP84GFGA04WAX2"],
+  ["oc_sk_7e1338de5f7a_C9690qgFz5FRBfaY5rOqSQqzkoulXae-", "wrk_01KTA98KJ3F66H7JCDYNS2E824"],
+  ["oc_sk_6c706ed80bf8_HwQSC-uExVhzjyzofwNbrh5YYwIar3rD", "org_01M55S80X4Z5SZBPRKAA1HDSRB"],
+  ["oc_sk_84f188e094b0_Pb0Fd03crbcY-SXDN24I1KcLYGjzWm3A", "org_01M58AXZG0FY0P2BP3WT37D1B2"],
+  ["oc_sk_e4f8d8517689_3yBp7QbNwdppDCa8ayDJnrGfM0NWxDqq", "org_01M58AZD6ZJWH7W3WHMDD7ND38"],
+])
 
 export async function getOpencodeOrgId(key: string): Promise<string | null> {
   if (opencodeOrgCache.has(key)) return opencodeOrgCache.get(key)!
   try {
-    const res = await fetch("https://opencode.ai/console/api/v2/config", {
+    const rawFetch = getOriginalFetch() ?? fetch
+    const res = await rawFetch("https://opencode.ai/console/api/v2/config", {
       headers: { authorization: `Bearer ${key}` },
     })
     if (res.ok) {

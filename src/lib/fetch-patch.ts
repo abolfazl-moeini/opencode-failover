@@ -15,6 +15,10 @@ let _input: any = null
 let _installed = false
 type FetchArgs = Parameters<typeof fetch>
 
+export function getOriginalFetch(): typeof fetch | null {
+  return _original
+}
+
 function toast(message: string, variant: string) {
   try { _input?.client?.tui?.showToast({ body: { message, variant, duration: 6000 } }) } catch {}
 }
