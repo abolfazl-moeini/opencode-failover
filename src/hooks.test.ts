@@ -53,6 +53,25 @@ describe("OpenCode v2 Native Session Hooks", () => {
     expect(headers.get("authorization")).toBe("Bearer key-2")
   })
 
+  it("injects x-opencode-org-id when cached for opencode key", async () => {
+    const { opencodeOrgCache } = await import("./lib/hooks.ts")
+    opencodeOrgCache.set("key-2", "org_test_123")
+
+    const headers = new Headers()
+    const event = {
+      model: { providerID: "opencode", modelID: "glm-5.3-flash-free" },
+      request: {
+        url: "https://opencode.ai/api/v2/chat",
+        headers,
+      },
+    }
+
+    await hooks["http.request"](event)
+    expect(headers.get("authorization")).toBe("Bearer key-2")
+    expect(headers.get("x-opencode-org-id")).toBe("org_test_123")
+    expect(headers.get("x-org-id")).toBe("org_test_123")
+  })
+
   it("quarantines key and switches to next key on 429 response", async () => {
     const reqHeaders = new Headers({ authorization: "Bearer key-1" })
     const resHeaders = new Headers({ "retry-after-ms": "5000" })

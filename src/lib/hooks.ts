@@ -48,14 +48,45 @@ function extractProviderID(event: any): string | null {
   return null
 }
 
-function applyAuthToHeaders(headers: Headers, providerID: string, key: string): void {
+export const opencodeOrgCache = new Map<string, string>()
+
+export async function getOpencodeOrgId(key: string): Promise<string | null> {
+  if (opencodeOrgCache.has(key)) return opencodeOrgCache.get(key)!
+  try {
+    const res = await fetch("https://opencode.ai/console/api/v2/config", {
+      headers: { authorization: `Bearer ${key}` },
+    })
+    if (res.ok) {
+      const json: any = await res.json()
+      const org = json?.providers?.opencode?.headers?.["x-opencode-org-id"]
+      if (typeof org === "string" && org.length > 0) {
+        opencodeOrgCache.set(key, org)
+        return org
+      }
+    }
+  } catch {}
+  return null
+}
+
+async function applyAuthToHeaders(headers: Headers, providerID: string, key: string): Promise<string | null> {
   const norm = providerID.toLowerCase()
   if (norm === "anthropic") {
     headers.set("x-api-key", key)
+    return null
   } else if (norm === "google" || norm.includes("gemini")) {
     headers.set("x-goog-api-key", key)
+    return null
   } else {
     headers.set("authorization", `Bearer ${key}`)
+    if (norm === "opencode") {
+      const orgId = await getOpencodeOrgId(key)
+      if (orgId) {
+        headers.set("x-opencode-org-id", orgId)
+        headers.set("x-org-id", orgId)
+      }
+      return orgId
+    }
+    return null
   }
 }
 
@@ -71,11 +102,12 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
       const activeKey = pool.pick(providerID)
       if (!activeKey) return
 
+      let orgId: string | null = null
       if (event.request?.headers && typeof event.request.headers.set === "function") {
-        applyAuthToHeaders(event.request.headers, providerID, activeKey)
+        orgId = await applyAuthToHeaders(event.request.headers, providerID, activeKey)
       }
 
-      try { writeAuthKey(providerID, activeKey) } catch {}
+      try { writeAuthKey(providerID, activeKey, orgId ? { orgID: orgId } : undefined) } catch {}
       try { syncCredentialDb(providerID, activeKey) } catch {}
     } catch {}
   })
