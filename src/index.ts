@@ -19,7 +19,10 @@ function trace(msg: string, detail?: Record<string, unknown>): void {
 }
 
 function safeToast(input: any, message: string, variant: string, duration?: number): void {
-  void input.client.tui.showToast({ body: { message, variant, duration: duration ?? 5000 } })
+  try { input?.client?.tui?.showToast({ body: { message, variant, duration: duration ?? 5000 } }) } catch {}
+  try { input?.ui?.toast?.show({ message, variant, duration: duration ?? 5000 }) } catch {}
+  try { input?.context?.ui?.toast?.show({ message, variant, duration: duration ?? 5000 }) } catch {}
+  console.error(`[opencode-failover] ${message}`)
 }
 
 const PROVIDER_DISPLAY: Record<string, string> = {
@@ -336,9 +339,6 @@ const plugin = {
       },
     }
     const res = await server(ctx, input?.options)
-    if (res?.pool) {
-      installOpenCodeHooks(input, res.pool)
-    }
     if (res?.config) {
       try { await res.config() } catch (e) { trace(`res.config failed: ${e}`) }
     }

@@ -7,6 +7,13 @@ function safeToast(input: any, message: string, variant: string, duration?: numb
   try {
     input?.client?.tui?.showToast({ body: { message, variant, duration: duration ?? 5000 } })
   } catch {}
+  try {
+    input?.ui?.toast?.show({ message, variant, duration: duration ?? 5000 })
+  } catch {}
+  try {
+    input?.context?.ui?.toast?.show({ message, variant, duration: duration ?? 5000 })
+  } catch {}
+  console.error(`[opencode-failover] ${message}`)
 }
 
 function maskKey(key: string): string {
@@ -131,6 +138,11 @@ export async function applyAuthToHeaders(headers: any, providerID: string, key: 
 
 export function installOpenCodeHooks(input: any, pool: KeyPool): void {
   if (!input?.session?.hook || typeof input.session.hook !== "function") return
+  if ((input.session as any).__opencode_failover_hooks_installed) return
+  ;(input.session as any).__opencode_failover_hooks_installed = true
+
+  const lastAttemptedKey = new Map<string, string>()
+  const lastHandledResponseKey = new Map<string, string>()
 
   // 1. Intercept outgoing model HTTP requests to inject the current active key
   input.session.hook("http.request", async (event: any) => {
@@ -140,6 +152,8 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
 
       const activeKey = pool.getActiveKey(providerID) ?? pool.getCurrentKey(providerID) ?? pool.pick(providerID)
       if (!activeKey) return
+
+      lastAttemptedKey.set(providerID, activeKey)
 
       if (event.request && typeof event.request === "object") {
         try {
@@ -166,21 +180,6 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
       const providerID = extractProviderID(event)
       if (!providerID || !pool.hasProvider(providerID)) return
 
-      let body = ""
-      if (status >= 400 || status === 200) {
-        try {
-          body = await event.response.clone().text()
-        } catch {}
-      }
-
-      const classification = classify({
-        statusCode: status,
-        responseBody: body,
-        message: body.slice(0, 300),
-      })
-
-      if (classification.action === ErrorAction.Ignore && status < 400) return
-
       // Identify the key that was sent
       let failedKey = (event.request as any)?.__failover_key ?? ""
       if (!failedKey && event.request?.headers) {
@@ -198,43 +197,67 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
         failedKey = pool.getCurrentKey(providerID) ?? ""
       }
 
+      if (status >= 200 && status < 300) {
+        if (failedKey) {
+          try { pool.recordSuccess(providerID, failedKey) } catch {}
+        }
+        return
+      }
+
+      let body = ""
+      if (status >= 400) {
+        try {
+          body = await event.response.clone().text()
+        } catch {}
+      }
+
+      const classification = classify({
+        statusCode: status,
+        responseBody: body,
+        message: body.slice(0, 300),
+      })
+
+      if (classification.action === ErrorAction.Ignore && status < 400) return
+
       if (
         classification.action === ErrorAction.Rotate ||
         classification.action === ErrorAction.Overload ||
         status === 429
       ) {
         if (failedKey) {
+          lastHandledResponseKey.set(providerID, failedKey)
           pool.quarantine(providerID, failedKey, classification.retryAfterMs, classification.reason)
         }
         if (pool.hasAvailableKey(providerID)) {
-          const nextKey = pool.pick(providerID)
+          const nextKey = pool.getActiveKey(providerID) ?? pool.pick(providerID)
           const nextOrg = providerID.toLowerCase() === "opencode" ? await getOpencodeOrgId(nextKey) : null
           try { writeAuthKey(providerID, nextKey, nextOrg ? { orgID: nextOrg } : undefined) } catch {}
           try { syncCredentialDb(providerID, nextKey) } catch {}
           safeToast(
             input,
-            `opencode-failover: [${providerID}] limit reached (${classification.reason}). Rotated to key ${maskKey(nextKey)}.`,
+            `[${providerID}] limit reached (${classification.reason}). Rotated to key ${maskKey(nextKey)}.`,
             "warning",
           )
         } else {
-          safeToast(input, `opencode-failover: All keys exhausted for ${providerID}.`, "error")
+          safeToast(input, `All keys exhausted for ${providerID}.`, "error")
         }
       } else if (classification.action === ErrorAction.Disable) {
         if (failedKey) {
+          lastHandledResponseKey.set(providerID, failedKey)
           pool.disable(providerID, failedKey, classification.reason)
         }
         if (pool.hasAvailableKey(providerID)) {
-          const nextKey = pool.pick(providerID)
+          const nextKey = pool.getActiveKey(providerID) ?? pool.pick(providerID)
           const nextOrg = providerID.toLowerCase() === "opencode" ? await getOpencodeOrgId(nextKey) : null
           try { writeAuthKey(providerID, nextKey, nextOrg ? { orgID: nextOrg } : undefined) } catch {}
           try { syncCredentialDb(providerID, nextKey) } catch {}
           safeToast(
             input,
-            `opencode-failover: [${providerID}] key disabled (${classification.reason}). Switched to ${maskKey(nextKey)}.`,
+            `[${providerID}] key disabled (${classification.reason}). Switched to ${maskKey(nextKey)}.`,
             "error",
           )
         } else {
-          safeToast(input, `opencode-failover: All keys disabled for ${providerID}.`, "error")
+          safeToast(input, `All keys disabled for ${providerID}.`, "error")
         }
       }
     } catch {}
@@ -246,11 +269,29 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
       const providerID = extractProviderID(event)
       if (!providerID || !pool.hasProvider(providerID)) return
 
+      const attempted = lastAttemptedKey.get(providerID) ?? pool.getCurrentKey(providerID)
+      const handled = lastHandledResponseKey.get(providerID)
+
+      if (attempted && handled !== attempted) {
+        const status = pool.status(providerID).find((k) => k.key === attempted)
+        if (status && status.status === "active") {
+          const classification = classify(event.error)
+          if (classification.action === ErrorAction.Disable) {
+            pool.disable(providerID, attempted, classification.reason)
+          } else {
+            pool.quarantine(providerID, attempted, classification.retryAfterMs, classification.reason)
+          }
+          lastHandledResponseKey.set(providerID, attempted)
+        }
+      }
+
       if (pool.hasAvailableKey(providerID)) {
-        const nextKey = pool.pick(providerID)
-        const nextOrg = providerID.toLowerCase() === "opencode" ? await getOpencodeOrgId(nextKey) : null
-        try { writeAuthKey(providerID, nextKey, nextOrg ? { orgID: nextOrg } : undefined) } catch {}
-        try { syncCredentialDb(providerID, nextKey) } catch {}
+        const nextKey = pool.getActiveKey(providerID) ?? pool.getCurrentKey(providerID)
+        if (nextKey) {
+          const nextOrg = providerID.toLowerCase() === "opencode" ? await getOpencodeOrgId(nextKey) : null
+          try { writeAuthKey(providerID, nextKey, nextOrg ? { orgID: nextOrg } : undefined) } catch {}
+          try { syncCredentialDb(providerID, nextKey) } catch {}
+        }
 
         event.decision = {
           retry: true,
@@ -270,7 +311,12 @@ export function installOpenCodeHooks(input: any, pool: KeyPool): void {
         }
 
         event.decision = { retry: false }
-        safeToast(input, `opencode-failover: Cannot retry — all keys exhausted for ${providerID}.`, "error")
+        const totalKeys = pool.status(providerID).length
+        if (event.error) {
+          event.error.type = "failover.exhausted"
+          event.error.message = `[opencode-failover] All ${totalKeys} keys for provider "${providerID}" were attempted and are exhausted/quarantined.`
+        }
+        safeToast(input, `Cannot retry — all keys exhausted for ${providerID}.`, "error")
       }
     } catch {}
   })

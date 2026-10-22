@@ -158,6 +158,14 @@ export class KeyPool {
     this.serialize()
   }
 
+  recordSuccess(providerID: string, key: string): void {
+    const entry = this.pool(providerID).find((k) => k.key === key)
+    if (!entry) return
+    entry.consecutiveErrors = 0
+    entry.lastErrorMessage = ""
+    this.serialize()
+  }
+
   status(providerID: string): KeyState[] {
     return [...this.pool(providerID)]
   }

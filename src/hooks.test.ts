@@ -136,6 +136,90 @@ describe("OpenCode v2 Native Session Hooks", () => {
     await hooks["retry"](event)
 
     expect(event.decision.retry).toBe(false)
+    expect(event.error.type).toBe("failover.exhausted")
+    expect(event.error.message).toContain("All 3 keys for provider \"opencode\" were attempted")
     expect(mockInput.client.tui.showToast).toHaveBeenCalled()
+  })
+
+  it("prevents double-installation of hooks on the same session", () => {
+    installOpenCodeHooks(mockInput, pool)
+    installOpenCodeHooks(mockInput, pool)
+    // Should still only have been called 3 times total from the initial setup
+    expect(mockInput.session.hook).toHaveBeenCalledTimes(3)
+  })
+
+  it("does not skip keys when http.response and retry fire in sequence", async () => {
+    // Attempt 1: Request sent with Key 1
+    const req1 = { headers: new Headers({ authorization: "Bearer key-1" }) }
+    await hooks["http.request"]({ model: { providerID: "opencode" }, request: req1 })
+
+    // Response returns 429
+    const res1 = new Response(JSON.stringify({ error: { type: "FreeUsageLimitError" } }), { status: 429 })
+    await hooks["http.response"]({ model: { providerID: "opencode" }, request: req1, response: res1 })
+    
+    // Key 1 is now quarantined. Next active key should be key-2:
+    expect(pool.getActiveKey("opencode")).toBe("key-2")
+
+    // Retry hook runs for attempt 1
+    const retry1 = {
+      model: { providerID: "opencode" },
+      error: { type: "provider.free-limit", message: "Free usage limit reached." },
+      attempt: 1,
+      decision: { retry: false, delay: 0 },
+    }
+    await hooks["retry"](retry1)
+    expect(retry1.decision.retry).toBe(true)
+    // Key-2 should NOT have been skipped!
+    expect(pool.getActiveKey("opencode")).toBe("key-2")
+
+    // Attempt 2: Request sent with Key 2
+    const req2 = { headers: new Headers({ authorization: "Bearer key-2" }) }
+    await hooks["http.request"]({ model: { providerID: "opencode" }, request: req2 })
+
+    const res2 = new Response(JSON.stringify({ error: { type: "FreeUsageLimitError" } }), { status: 429 })
+    await hooks["http.response"]({ model: { providerID: "opencode" }, request: req2, response: res2 })
+    expect(pool.getActiveKey("opencode")).toBe("key-3")
+
+    const retry2 = {
+      model: { providerID: "opencode" },
+      error: { type: "provider.free-limit", message: "Free usage limit reached." },
+      attempt: 2,
+      decision: { retry: false, delay: 0 },
+    }
+    await hooks["retry"](retry2)
+    expect(retry2.decision.retry).toBe(true)
+    expect(pool.getActiveKey("opencode")).toBe("key-3")
+
+    // Attempt 3: Request sent with Key 3
+    const req3 = { headers: new Headers({ authorization: "Bearer key-3" }) }
+    await hooks["http.request"]({ model: { providerID: "opencode" }, request: req3 })
+
+    const res3 = new Response(JSON.stringify({ error: { type: "FreeUsageLimitError" } }), { status: 429 })
+    await hooks["http.response"]({ model: { providerID: "opencode" }, request: req3, response: res3 })
+
+    const retry3 = {
+      model: { providerID: "opencode" },
+      error: { type: "provider.free-limit", message: "Free usage limit reached." },
+      attempt: 3,
+      decision: { retry: false, delay: 0 },
+    }
+    await hooks["retry"](retry3)
+    // All 3 keys are exhausted now
+    expect(retry3.decision.retry).toBe(false)
+    expect(retry3.error.type).toBe("failover.exhausted")
+    expect(retry3.error.message).toContain("All 3 keys for provider \"opencode\" were attempted and are exhausted/quarantined")
+  })
+
+  it("resets consecutiveErrors on 200 success response", async () => {
+    // Force 1 error on key-1
+    pool.quarantine("opencode", "key-1", 100, "temp error")
+    expect(pool.status("opencode")[0]!.consecutiveErrors).toBe(1)
+
+    // Receive a 200 response with key-1
+    const req = { headers: new Headers({ authorization: "Bearer key-1" }) }
+    const res = new Response("OK", { status: 200 })
+    await hooks["http.response"]({ model: { providerID: "opencode" }, request: req, response: res })
+
+    expect(pool.status("opencode")[0]!.consecutiveErrors).toBe(0)
   })
 })
